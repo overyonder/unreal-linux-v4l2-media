@@ -1,0 +1,12 @@
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+.idea/
+.vscode/
+*.sln
+*.opensdf
+*.sdf
+*.suo
+*.xcodeproj
+
