@@ -46,29 +46,32 @@ namespace
 		TArray<FLinuxVideoCaptureFormat>& Formats,
 		uint32 Width,
 		uint32 Height,
-		uint32 FramesPerSecond,
+		uint32 FrameRateNumerator,
+		uint32 FrameRateDenominator,
 		uint32 PixelFormat)
 	{
-		if (Width == 0 || Height == 0 || FramesPerSecond == 0)
+		if (Width == 0 || Height == 0 || FrameRateNumerator == 0 || FrameRateDenominator == 0)
 		{
 			return;
 		}
 
 		const bool AlreadyPresent = Formats.ContainsByPredicate(
-			[Width, Height, FramesPerSecond, PixelFormat](const FLinuxVideoCaptureFormat& Existing)
+			[Width, Height, FrameRateNumerator, FrameRateDenominator, PixelFormat](const FLinuxVideoCaptureFormat& Existing)
 			{
 				return Existing.Dimensions.X == static_cast<int32>(Width) &&
 					Existing.Dimensions.Y == static_cast<int32>(Height) &&
-					Existing.FramesPerSecond == FramesPerSecond &&
+					Existing.FrameRateNumerator == FrameRateNumerator &&
+					Existing.FrameRateDenominator == FrameRateDenominator &&
 					Existing.PixelFormat == PixelFormat;
 			});
 
 		if (!AlreadyPresent)
 		{
 			FLinuxVideoCaptureFormat& Format = Formats.Emplace_GetRef();
-			Format.Dimensions      = FIntPoint(static_cast<int32>(Width), static_cast<int32>(Height));
-			Format.FramesPerSecond = FramesPerSecond;
-			Format.PixelFormat     = PixelFormat;
+			Format.Dimensions           = FIntPoint(static_cast<int32>(Width), static_cast<int32>(Height));
+			Format.FrameRateNumerator   = FrameRateNumerator;
+			Format.FrameRateDenominator = FrameRateDenominator;
+			Format.PixelFormat          = PixelFormat;
 		}
 	}
 
@@ -90,29 +93,29 @@ namespace
 		{
 			if (FrameInterval.type == V4L2_FRMIVAL_TYPE_DISCRETE && FrameInterval.discrete.numerator != 0)
 			{
-				const uint32 FramesPerSecond = FMath::Max(
-					1u,
-					FrameInterval.discrete.denominator / FrameInterval.discrete.numerator);
 				AddUniqueLinuxVideoCaptureFormat(
 					OutFormats,
 					Width,
 					Height,
-					FramesPerSecond,
+					FrameInterval.discrete.denominator,
+					FrameInterval.discrete.numerator,
 					PixelFormat);
 			}
 			else if (FrameInterval.type == V4L2_FRMIVAL_TYPE_CONTINUOUS ||
 				FrameInterval.type == V4L2_FRMIVAL_TYPE_STEPWISE)
 			{
-				const uint32 FramesPerSecond = FrameInterval.stepwise.min.numerator == 0
+				const uint32 FrameRateNumerator = FrameInterval.stepwise.min.numerator == 0
 					? 30u
-					: FMath::Max(
-						1u,
-						FrameInterval.stepwise.min.denominator / FrameInterval.stepwise.min.numerator);
+					: FrameInterval.stepwise.min.denominator;
+				const uint32 FrameRateDenominator = FrameInterval.stepwise.min.numerator == 0
+					? 1u
+					: FrameInterval.stepwise.min.numerator;
 				AddUniqueLinuxVideoCaptureFormat(
 					OutFormats,
 					Width,
 					Height,
-					FramesPerSecond,
+					FrameRateNumerator,
+					FrameRateDenominator,
 					PixelFormat);
 				break;
 			}
@@ -184,8 +187,14 @@ bool EnumerateLinuxVideoCaptureFormats(
 			else if (FrameSize.type == V4L2_FRMSIZE_TYPE_CONTINUOUS ||
 				FrameSize.type == V4L2_FRMSIZE_TYPE_STEPWISE)
 			{
-				const uint32 Width  = FMath::Clamp(640u, FrameSize.stepwise.min_width, FrameSize.stepwise.max_width);
-				const uint32 Height = FMath::Clamp(480u, FrameSize.stepwise.min_height, FrameSize.stepwise.max_height);
+				const uint32 ClampedWidth  = FMath::Clamp(640u, FrameSize.stepwise.min_width, FrameSize.stepwise.max_width);
+				const uint32 ClampedHeight = FMath::Clamp(480u, FrameSize.stepwise.min_height, FrameSize.stepwise.max_height);
+				const uint32 WidthStep     = FMath::Max(1u, FrameSize.stepwise.step_width);
+				const uint32 HeightStep    = FMath::Max(1u, FrameSize.stepwise.step_height);
+				const uint32 Width = FrameSize.stepwise.min_width +
+					((ClampedWidth - FrameSize.stepwise.min_width) / WidthStep) * WidthStep;
+				const uint32 Height = FrameSize.stepwise.min_height +
+					((ClampedHeight - FrameSize.stepwise.min_height) / HeightStep) * HeightStep;
 				EnumerateDiscreteFrameRates(
 					DeviceFileDescriptor,
 					PixelFormat.pixelformat,
@@ -202,7 +211,7 @@ bool EnumerateLinuxVideoCaptureFormats(
 		const int64 LeftPixels  = static_cast<int64>(Left.Dimensions.X) * Left.Dimensions.Y;
 		const int64 RightPixels = static_cast<int64>(Right.Dimensions.X) * Right.Dimensions.Y;
 		return LeftPixels == RightPixels
-			? Left.FramesPerSecond > Right.FramesPerSecond
+			? Left.GetFramesPerSecond() > Right.GetFramesPerSecond()
 			: LeftPixels < RightPixels;
 	});
 
@@ -231,6 +240,11 @@ void FLinuxVideoCaptureMediaPlayer::Close()
 	DevicePath.Reset();
 	DeviceName.Reset();
 	CurrentTimeTicks = 0;
+	CaptureFailurePending = false;
+	ActiveDimensions = FIntPoint::ZeroValue;
+	ActiveStride = 0;
+	ActiveFrameRateNumerator = 0;
+	ActiveFrameRateDenominator = 1;
 	CurrentState = EMediaState::Closed;
 
 	if (WasOpen)
@@ -314,6 +328,17 @@ bool FLinuxVideoCaptureMediaPlayer::Open(
 	return false;
 }
 
+void FLinuxVideoCaptureMediaPlayer::TickInput(FTimespan, FTimespan)
+{
+	if (CaptureFailurePending.Exchange(false))
+	{
+		StopCapturingSelectedVideoFormat();
+		Samples->FlushSamples();
+		CurrentState = EMediaState::Error;
+		EventSink.ReceiveMediaEvent(EMediaEvent::MediaOpenFailed);
+	}
+}
+
 bool FLinuxVideoCaptureMediaPlayer::CanControl(EMediaControl Control) const
 {
 	return Control == EMediaControl::Pause || Control == EMediaControl::Resume;
@@ -338,6 +363,11 @@ TRangeSet<float> FLinuxVideoCaptureMediaPlayer::GetSupportedRates(EMediaRateThin
 
 bool FLinuxVideoCaptureMediaPlayer::SetRate(float Rate)
 {
+	if ((Rate == 1.0f && CurrentState.Load() == EMediaState::Playing) ||
+		(Rate == 0.0f && CurrentState.Load() == EMediaState::Paused))
+	{
+		return true;
+	}
 	if (Rate == 1.0f && CurrentState.Load() == EMediaState::Paused)
 	{
 		CurrentState = EMediaState::Playing;
@@ -403,7 +433,7 @@ bool FLinuxVideoCaptureMediaPlayer::GetVideoTrackFormat(
 
 	const FLinuxVideoCaptureFormat& Format = VideoFormats[FormatIndex];
 	OutFormat.Dim       = Format.Dimensions;
-	OutFormat.FrameRate = static_cast<float>(Format.FramesPerSecond);
+	OutFormat.FrameRate = Format.GetFramesPerSecond();
 	OutFormat.FrameRates = TRange<float>(OutFormat.FrameRate);
 	OutFormat.TypeName  = TEXT("YUYV");
 	return true;
@@ -411,7 +441,7 @@ bool FLinuxVideoCaptureMediaPlayer::GetVideoTrackFormat(
 
 bool FLinuxVideoCaptureMediaPlayer::SelectTrack(EMediaTrackType TrackType, int32 TrackIndex)
 {
-	return TrackType == EMediaTrackType::Video && (TrackIndex == 0 || TrackIndex == INDEX_NONE);
+	return TrackType == EMediaTrackType::Video && TrackIndex == 0;
 }
 
 bool FLinuxVideoCaptureMediaPlayer::SetTrackFormat(
@@ -428,23 +458,35 @@ bool FLinuxVideoCaptureMediaPlayer::SetTrackFormat(
 		return true;
 	}
 
+	const EMediaState StateBeforeFormatChange = CurrentState.Load();
 	StopCapturingSelectedVideoFormat();
 	Samples->FlushSamples();
 	SelectedVideoFormat = FormatIndex;
-	return StartCapturingSelectedVideoFormat();
+	CurrentState = EMediaState::Preparing;
+	if (StartCapturingSelectedVideoFormat())
+	{
+		CurrentState = StateBeforeFormatChange == EMediaState::Paused
+			? EMediaState::Paused
+			: EMediaState::Playing;
+		return true;
+	}
+
+	CurrentState = EMediaState::Error;
+	EventSink.ReceiveMediaEvent(EMediaEvent::MediaOpenFailed);
+	return false;
 }
 
 bool FLinuxVideoCaptureMediaPlayer::SetVideoTrackFrameRate(int32 TrackIndex, int32 FormatIndex, float FrameRate)
 {
 	return TrackIndex == 0 && VideoFormats.IsValidIndex(FormatIndex) &&
-		FMath::IsNearlyEqual(static_cast<float>(VideoFormats[FormatIndex].FramesPerSecond), FrameRate);
+		FMath::IsNearlyEqual(VideoFormats[FormatIndex].GetFramesPerSecond(), FrameRate);
 }
 
 int32 FLinuxVideoCaptureMediaPlayer::ChooseDefaultVideoFormat() const
 {
 	const int32 Preferred = VideoFormats.IndexOfByPredicate([](const FLinuxVideoCaptureFormat& Format)
 	{
-		return Format.Dimensions == FIntPoint(640, 480) && Format.FramesPerSecond == 30;
+		return Format.Dimensions == FIntPoint(640, 480) && FMath::IsNearlyEqual(Format.GetFramesPerSecond(), 30.0f);
 	});
 	return Preferred != INDEX_NONE ? Preferred : 0;
 }
@@ -456,7 +498,7 @@ bool FLinuxVideoCaptureMediaPlayer::StartCapturingSelectedVideoFormat()
 		return false;
 	}
 
-	const FLinuxVideoCaptureFormat& Format = VideoFormats[SelectedVideoFormat];
+	FLinuxVideoCaptureFormat& Format = VideoFormats[SelectedVideoFormat];
 	DeviceFileDescriptor = ::open(TCHAR_TO_UTF8(*DevicePath), O_RDWR | O_NONBLOCK);
 	if (DeviceFileDescriptor == -1)
 	{
@@ -471,18 +513,57 @@ bool FLinuxVideoCaptureMediaPlayer::StartCapturingSelectedVideoFormat()
 	DeviceFormat.fmt.pix.pixelformat = Format.PixelFormat;
 	DeviceFormat.fmt.pix.field       = V4L2_FIELD_ANY;
 	if (RetryVideoCaptureIoctl(DeviceFileDescriptor, VIDIOC_S_FMT, &DeviceFormat) == -1 ||
-		DeviceFormat.fmt.pix.pixelformat != LinuxVideoCaptureRequiredPixelFormat)
+		DeviceFormat.fmt.pix.pixelformat != LinuxVideoCaptureRequiredPixelFormat ||
+		DeviceFormat.fmt.pix.width == 0 ||
+		DeviceFormat.fmt.pix.height == 0)
 	{
 		UE_LOG(LogLinuxVideoCaptureMedia, Error, TEXT("Failed to select YUYV on %s"), *DevicePath);
 		StopCapturingSelectedVideoFormat();
 		return false;
 	}
+	ActiveDimensions = FIntPoint(
+		static_cast<int32>(DeviceFormat.fmt.pix.width),
+		static_cast<int32>(DeviceFormat.fmt.pix.height));
+	ActiveStride = DeviceFormat.fmt.pix.bytesperline != 0
+		? DeviceFormat.fmt.pix.bytesperline
+		: DeviceFormat.fmt.pix.width * 2;
+	if ((ActiveDimensions.X & 1) != 0 || (ActiveStride & 3u) != 0 ||
+		ActiveStride < static_cast<uint32>(ActiveDimensions.X * 2))
+	{
+		UE_LOG(LogLinuxVideoCaptureMedia, Error, TEXT("Unsupported negotiated YUYV layout on %s"), *DevicePath);
+		StopCapturingSelectedVideoFormat();
+		return false;
+	}
+	Format.Dimensions = ActiveDimensions;
 
 	v4l2_streamparm StreamParameters = {};
 	StreamParameters.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	StreamParameters.parm.capture.timeperframe.numerator   = 1;
-	StreamParameters.parm.capture.timeperframe.denominator = Format.FramesPerSecond;
-	RetryVideoCaptureIoctl(DeviceFileDescriptor, VIDIOC_S_PARM, &StreamParameters);
+	const bool RetrievedStreamParameters =
+		RetryVideoCaptureIoctl(DeviceFileDescriptor, VIDIOC_G_PARM, &StreamParameters) == 0;
+	if (RetrievedStreamParameters &&
+		(StreamParameters.parm.capture.capability & V4L2_CAP_TIMEPERFRAME) != 0)
+	{
+		const v4l2_fract PreviousTimePerFrame = StreamParameters.parm.capture.timeperframe;
+		StreamParameters.parm.capture.timeperframe.numerator   = Format.FrameRateDenominator;
+		StreamParameters.parm.capture.timeperframe.denominator = Format.FrameRateNumerator;
+		if (RetryVideoCaptureIoctl(DeviceFileDescriptor, VIDIOC_S_PARM, &StreamParameters) == -1)
+		{
+			StreamParameters.parm.capture.timeperframe = PreviousTimePerFrame;
+		}
+	}
+	if (StreamParameters.parm.capture.timeperframe.numerator != 0 &&
+		StreamParameters.parm.capture.timeperframe.denominator != 0)
+	{
+		ActiveFrameRateNumerator = StreamParameters.parm.capture.timeperframe.denominator;
+		ActiveFrameRateDenominator = StreamParameters.parm.capture.timeperframe.numerator;
+	}
+	else
+	{
+		ActiveFrameRateNumerator = Format.FrameRateNumerator;
+		ActiveFrameRateDenominator = Format.FrameRateDenominator;
+	}
+	Format.FrameRateNumerator = ActiveFrameRateNumerator;
+	Format.FrameRateDenominator = ActiveFrameRateDenominator;
 
 	v4l2_requestbuffers RequestedBuffers = {};
 	RequestedBuffers.count  = LinuxVideoCaptureRequestedBufferCount;
@@ -541,6 +622,7 @@ bool FLinuxVideoCaptureMediaPlayer::StartCapturingSelectedVideoFormat()
 
 	CapturedFrameCount = 0;
 	DroppedFrameCount = 0;
+	CaptureFailurePending = false;
 	StopCaptureThread = false;
 	CaptureThread = FRunnableThread::Create(this, TEXT("Linux V4L2 video capture"));
 	if (CaptureThread == nullptr)
@@ -585,8 +667,11 @@ void FLinuxVideoCaptureMediaPlayer::StopCapturingSelectedVideoFormat()
 uint32 FLinuxVideoCaptureMediaPlayer::Run()
 {
 	const double CaptureStartTime = FPlatformTime::Seconds();
-	const FLinuxVideoCaptureFormat Format = VideoFormats[SelectedVideoFormat];
-	const FTimespan FrameDuration = FTimespan::FromSeconds(1.0 / Format.FramesPerSecond);
+	const FTimespan CaptureTimelineOffset(CurrentTimeTicks.Load());
+	const FIntPoint CaptureDimensions = ActiveDimensions;
+	const uint32 CaptureStride = ActiveStride;
+	const FTimespan FrameDuration = FTimespan::FromSeconds(
+		static_cast<double>(ActiveFrameRateDenominator) / ActiveFrameRateNumerator);
 
 	while (!StopCaptureThread.Load())
 	{
@@ -594,7 +679,17 @@ uint32 FLinuxVideoCaptureMediaPlayer::Run()
 		PollDescriptor.fd     = DeviceFileDescriptor;
 		PollDescriptor.events = POLLIN;
 		const int PollResult = ::poll(&PollDescriptor, 1, 100);
-		if (PollResult <= 0)
+		if (PollResult == -1 && errno == EINTR)
+		{
+			continue;
+		}
+		if (PollResult == -1 || (PollDescriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+		{
+			CurrentState = EMediaState::Error;
+			CaptureFailurePending = true;
+			break;
+		}
+		if (PollResult == 0 || (PollDescriptor.revents & POLLIN) == 0)
 		{
 			continue;
 		}
@@ -607,6 +702,9 @@ uint32 FLinuxVideoCaptureMediaPlayer::Run()
 			if (errno != EAGAIN)
 			{
 				UE_LOG(LogLinuxVideoCaptureMedia, Warning, TEXT("V4L2 dequeue failed on %s: errno %d"), *DevicePath, errno);
+				CurrentState = EMediaState::Error;
+				CaptureFailurePending = true;
+				break;
 			}
 			continue;
 		}
@@ -614,15 +712,17 @@ uint32 FLinuxVideoCaptureMediaPlayer::Run()
 		if (MappedBuffers.IsValidIndex(static_cast<int32>(CapturedBuffer.index)) &&
 			CurrentState.Load() == EMediaState::Playing)
 		{
-			const uint32 ExpectedBufferSize = static_cast<uint32>(Format.Dimensions.X * Format.Dimensions.Y * 2);
+			const uint32 ExpectedBufferSize = CaptureStride * static_cast<uint32>(CaptureDimensions.Y);
 			const uint32 CapturedBufferSize = FMath::Min(ExpectedBufferSize, CapturedBuffer.bytesused);
 			if (CapturedBufferSize == ExpectedBufferSize && Samples->CanReceiveVideoSamples(1))
 			{
-				const FTimespan SampleTime = FTimespan::FromSeconds(FPlatformTime::Seconds() - CaptureStartTime);
+				const FTimespan SampleTime = CaptureTimelineOffset +
+					FTimespan::FromSeconds(FPlatformTime::Seconds() - CaptureStartTime);
 				Samples->AddVideo(MakeShared<FLinuxVideoCaptureTextureSample, ESPMode::ThreadSafe>(
 					MappedBuffers[CapturedBuffer.index].Address,
 					CapturedBufferSize,
-					Format.Dimensions,
+					CaptureDimensions,
+					CaptureStride,
 					SampleTime,
 					FrameDuration));
 				CurrentTimeTicks = SampleTime.GetTicks();
@@ -637,6 +737,8 @@ uint32 FLinuxVideoCaptureMediaPlayer::Run()
 		if (RetryVideoCaptureIoctl(DeviceFileDescriptor, VIDIOC_QBUF, &CapturedBuffer) == -1)
 		{
 			UE_LOG(LogLinuxVideoCaptureMedia, Warning, TEXT("V4L2 requeue failed on %s: errno %d"), *DevicePath, errno);
+			CurrentState = EMediaState::Error;
+			CaptureFailurePending = true;
 			break;
 		}
 	}

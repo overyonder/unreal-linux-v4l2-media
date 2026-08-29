@@ -10,6 +10,7 @@ public:
 		const void* SourceBuffer,
 		uint32 SourceBufferSize,
 		FIntPoint InDimensions,
+		uint32 InStride,
 		FTimespan InTime,
 		FTimespan InDuration);
 
@@ -29,7 +30,7 @@ public:
 private:
 	TArray<uint8> Buffer;
 	FIntPoint     Dimensions;
+	uint32        Stride;
 	FTimespan     Time;
 	FTimespan     Duration;
 };
-

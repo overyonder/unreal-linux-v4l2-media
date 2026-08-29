@@ -4,9 +4,11 @@ FLinuxVideoCaptureTextureSample::FLinuxVideoCaptureTextureSample(
 	const void* SourceBuffer,
 	uint32 SourceBufferSize,
 	FIntPoint InDimensions,
+	uint32 InStride,
 	FTimespan InTime,
 	FTimespan InDuration)
 	: Dimensions(InDimensions)
+	, Stride(InStride)
 	, Time(InTime)
 	, Duration(InDuration)
 {
@@ -21,7 +23,7 @@ const void* FLinuxVideoCaptureTextureSample::GetBuffer()
 
 FIntPoint FLinuxVideoCaptureTextureSample::GetDim() const
 {
-	return FIntPoint(Dimensions.X / 2, Dimensions.Y);
+	return FIntPoint(static_cast<int32>(Stride / 4), Dimensions.Y);
 }
 
 FTimespan FLinuxVideoCaptureTextureSample::GetDuration() const
@@ -41,7 +43,7 @@ FIntPoint FLinuxVideoCaptureTextureSample::GetOutputDim() const
 
 uint32 FLinuxVideoCaptureTextureSample::GetStride() const
 {
-	return static_cast<uint32>(Dimensions.X * 2);
+	return Stride;
 }
 
 #if WITH_ENGINE

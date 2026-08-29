@@ -39,6 +39,7 @@ public:
 		const TSharedRef<FArchive, ESPMode::ThreadSafe>& Archive,
 		const FString& OriginalUrl,
 		const IMediaOptions* Options) override;
+	virtual void TickInput(FTimespan DeltaTime, FTimespan Timecode) override;
 
 protected:
 	virtual bool CanControl(EMediaControl Control) const override;
@@ -96,5 +97,9 @@ private:
 	TAtomic<int64> CurrentTimeTicks = 0;
 	TAtomic<uint64> CapturedFrameCount = 0;
 	TAtomic<uint64> DroppedFrameCount = 0;
+	TAtomic<bool> CaptureFailurePending = false;
+	FIntPoint ActiveDimensions = FIntPoint::ZeroValue;
+	uint32 ActiveStride = 0;
+	uint32 ActiveFrameRateNumerator = 0;
+	uint32 ActiveFrameRateDenominator = 1;
 };
-

@@ -8,9 +8,17 @@ inline constexpr TCHAR LinuxVideoCaptureMediaUriScheme[] = TEXT("v4l2");
 
 struct FLinuxVideoCaptureFormat
 {
-	FIntPoint Dimensions       = FIntPoint::ZeroValue;
-	uint32    FramesPerSecond  = 0;
-	uint32    PixelFormat      = 0;
+	FIntPoint Dimensions              = FIntPoint::ZeroValue;
+	uint32    FrameRateNumerator      = 0;
+	uint32    FrameRateDenominator    = 1;
+	uint32    PixelFormat             = 0;
+
+	float GetFramesPerSecond() const
+	{
+		return FrameRateDenominator == 0
+			? 0.0f
+			: static_cast<float>(FrameRateNumerator) / static_cast<float>(FrameRateDenominator);
+	}
 };
 
 bool EnumerateLinuxVideoCaptureFormats(
@@ -18,4 +26,3 @@ bool EnumerateLinuxVideoCaptureFormats(
 	TArray<FLinuxVideoCaptureFormat>& OutFormats,
 	FString* OutDeviceName = nullptr,
 	FString* OutDeviceInformation = nullptr);
-
