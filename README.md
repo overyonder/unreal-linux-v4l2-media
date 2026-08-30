@@ -41,7 +41,13 @@ The Unreal process needs read and write permission for the corresponding
 Compressed MJPEG and H.264 camera modes are not yet decoded. Many USB webcams
 offer YUYV at 640×480 and compressed formats at higher resolutions.
 
+## Related plugin
+
+[Unreal NNE ONNX Runtime CUDA](https://github.com/overyonder/unreal-nne-onnxruntime-cuda)
+provides the CUDA-backed NNE runtime used to accelerate MetaHuman face solving.
+Use this capture plugin to supply Linux webcam frames and the NNE plugin to run
+the neural-network solver on a supported NVIDIA GPU.
+
 ## License
 
 MIT
-
