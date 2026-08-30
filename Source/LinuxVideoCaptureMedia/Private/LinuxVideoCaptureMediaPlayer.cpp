@@ -1,5 +1,6 @@
 #include "LinuxVideoCaptureMediaPlayer.h"
 
+#include "Async/Async.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/RunnableThread.h"
 #include "IMediaEventSink.h"
@@ -40,6 +41,21 @@ namespace
 
 		return (DeviceCapabilities & V4L2_CAP_VIDEO_CAPTURE) != 0 &&
 			(DeviceCapabilities & V4L2_CAP_STREAMING) != 0;
+	}
+
+	void RequestMediaSampleQueueFlushOnAllowedThread(
+		const TSharedPtr<FMediaSamples, ESPMode::ThreadSafe>& Samples)
+	{
+		if (IsInGameThread() || IsInSlateThread())
+		{
+			Samples->FlushSamples();
+			return;
+		}
+
+		AsyncTask(ENamedThreads::GameThread, [Samples]
+		{
+			Samples->FlushSamples();
+		});
 	}
 
 	void AddUniqueLinuxVideoCaptureFormat(
@@ -233,7 +249,7 @@ void FLinuxVideoCaptureMediaPlayer::Close()
 {
 	const bool WasOpen = CurrentState.Load() != EMediaState::Closed;
 	StopCapturingSelectedVideoFormat();
-	Samples->FlushSamples();
+	RequestMediaSampleQueueFlushOnAllowedThread(Samples);
 	VideoFormats.Reset();
 	SelectedVideoFormat = INDEX_NONE;
 	MediaUrl.Reset();
@@ -333,7 +349,7 @@ void FLinuxVideoCaptureMediaPlayer::TickInput(FTimespan, FTimespan)
 	if (CaptureFailurePending.Exchange(false))
 	{
 		StopCapturingSelectedVideoFormat();
-		Samples->FlushSamples();
+		RequestMediaSampleQueueFlushOnAllowedThread(Samples);
 		CurrentState = EMediaState::Error;
 		EventSink.ReceiveMediaEvent(EMediaEvent::MediaOpenFailed);
 	}
@@ -460,7 +476,7 @@ bool FLinuxVideoCaptureMediaPlayer::SetTrackFormat(
 
 	const EMediaState StateBeforeFormatChange = CurrentState.Load();
 	StopCapturingSelectedVideoFormat();
-	Samples->FlushSamples();
+	RequestMediaSampleQueueFlushOnAllowedThread(Samples);
 	SelectedVideoFormat = FormatIndex;
 	CurrentState = EMediaState::Preparing;
 	if (StartCapturingSelectedVideoFormat())
