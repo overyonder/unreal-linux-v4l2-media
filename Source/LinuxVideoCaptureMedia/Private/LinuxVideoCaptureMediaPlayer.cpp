@@ -435,7 +435,7 @@ bool FLinuxVideoCaptureMediaPlayer::GetVideoTrackFormat(
 	OutFormat.Dim       = Format.Dimensions;
 	OutFormat.FrameRate = Format.GetFramesPerSecond();
 	OutFormat.FrameRates = TRange<float>(OutFormat.FrameRate);
-	OutFormat.TypeName  = TEXT("YUYV");
+	OutFormat.TypeName  = TEXT("YUY2");
 	return true;
 }
 
