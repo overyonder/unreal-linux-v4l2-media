@@ -314,7 +314,7 @@ bool FLinuxVideoCaptureMediaPlayer::Open(const FString& Url, const IMediaOptions
 	FString DeviceInformation;
 	if (!EnumerateLinuxVideoCaptureFormats(DevicePath, VideoFormats, &DeviceName, &DeviceInformation))
 	{
-		UE_LOG(LogLinuxVideoCaptureMedia, Error, TEXT("No supported YUYV format on %s"), *DevicePath);
+		UE_LOGF(LogLinuxVideoCaptureMedia, Error, "No supported YUYV format on %ls", *DevicePath);
 		EventSink.ReceiveMediaEvent(EMediaEvent::MediaOpenFailed);
 		return false;
 	}
@@ -518,7 +518,7 @@ bool FLinuxVideoCaptureMediaPlayer::StartCapturingSelectedVideoFormat()
 	DeviceFileDescriptor = ::open(TCHAR_TO_UTF8(*DevicePath), O_RDWR | O_NONBLOCK);
 	if (DeviceFileDescriptor == -1)
 	{
-		UE_LOG(LogLinuxVideoCaptureMedia, Error, TEXT("Failed to open %s: errno %d"), *DevicePath, errno);
+		UE_LOGF(LogLinuxVideoCaptureMedia, Error, "Failed to open %ls: errno %d", *DevicePath, errno);
 		return false;
 	}
 
@@ -533,7 +533,7 @@ bool FLinuxVideoCaptureMediaPlayer::StartCapturingSelectedVideoFormat()
 		DeviceFormat.fmt.pix.width == 0 ||
 		DeviceFormat.fmt.pix.height == 0)
 	{
-		UE_LOG(LogLinuxVideoCaptureMedia, Error, TEXT("Failed to select YUYV on %s"), *DevicePath);
+		UE_LOGF(LogLinuxVideoCaptureMedia, Error, "Failed to select YUYV on %ls", *DevicePath);
 		StopCapturingSelectedVideoFormat();
 		return false;
 	}
@@ -546,7 +546,7 @@ bool FLinuxVideoCaptureMediaPlayer::StartCapturingSelectedVideoFormat()
 	if ((ActiveDimensions.X & 1) != 0 || (ActiveStride & 3u) != 0 ||
 		ActiveStride < static_cast<uint32>(ActiveDimensions.X * 2))
 	{
-		UE_LOG(LogLinuxVideoCaptureMedia, Error, TEXT("Unsupported negotiated YUYV layout on %s"), *DevicePath);
+		UE_LOGF(LogLinuxVideoCaptureMedia, Error, "Unsupported negotiated YUYV layout on %ls", *DevicePath);
 		StopCapturingSelectedVideoFormat();
 		return false;
 	}
@@ -588,7 +588,7 @@ bool FLinuxVideoCaptureMediaPlayer::StartCapturingSelectedVideoFormat()
 	if (RetryVideoCaptureIoctl(DeviceFileDescriptor, VIDIOC_REQBUFS, &RequestedBuffers) == -1 ||
 		RequestedBuffers.count < 2)
 	{
-		UE_LOG(LogLinuxVideoCaptureMedia, Error, TEXT("Failed to allocate V4L2 buffers on %s"), *DevicePath);
+		UE_LOGF(LogLinuxVideoCaptureMedia, Error, "Failed to allocate V4L2 buffers on %ls", *DevicePath);
 		StopCapturingSelectedVideoFormat();
 		return false;
 	}
@@ -717,7 +717,7 @@ uint32 FLinuxVideoCaptureMediaPlayer::Run()
 		{
 			if (errno != EAGAIN)
 			{
-				UE_LOG(LogLinuxVideoCaptureMedia, Warning, TEXT("V4L2 dequeue failed on %s: errno %d"), *DevicePath, errno);
+				UE_LOGF(LogLinuxVideoCaptureMedia, Warning, "V4L2 dequeue failed on %ls: errno %d", *DevicePath, errno);
 				CurrentState = EMediaState::Error;
 				CaptureFailurePending = true;
 				break;
@@ -752,7 +752,7 @@ uint32 FLinuxVideoCaptureMediaPlayer::Run()
 
 		if (RetryVideoCaptureIoctl(DeviceFileDescriptor, VIDIOC_QBUF, &CapturedBuffer) == -1)
 		{
-			UE_LOG(LogLinuxVideoCaptureMedia, Warning, TEXT("V4L2 requeue failed on %s: errno %d"), *DevicePath, errno);
+			UE_LOGF(LogLinuxVideoCaptureMedia, Warning, "V4L2 requeue failed on %ls: errno %d", *DevicePath, errno);
 			CurrentState = EMediaState::Error;
 			CaptureFailurePending = true;
 			break;
